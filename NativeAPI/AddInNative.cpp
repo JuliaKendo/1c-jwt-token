@@ -34,6 +34,7 @@ static IAddInDefBase *pAsyncEvent = NULL;
 uint32_t convToShortWchar(WCHAR_T** Dest, const wchar_t* Source, uint32_t len = 0);
 uint32_t convFromShortWchar(wchar_t** Dest, const WCHAR_T* Source, uint32_t len = 0);
 uint32_t getLenShortWcharStr(const WCHAR_T* Source);
+char* get_str_param(tVariant* paParams, int idx);
 
 //---------------------------------------------------------------------------//
 long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface)
@@ -290,7 +291,7 @@ long CAddInNative::GetNParams(const long lMethodNum)
     switch(lMethodNum)
     { 
     case eMethGenerateToken:
-        return 4;
+        return 9;
     default:
         return 0;
     }
@@ -369,8 +370,6 @@ bool CAddInNative::CallAsFunc(const long lMethodNum,
     FILE *file = 0;
     char *name = 0;
     int size = 0;
-    char *mbstr = 0;
-    wchar_t* wsTmp = 0;
 
     switch(lMethodNum)
     {
@@ -378,7 +377,12 @@ bool CAddInNative::CallAsFunc(const long lMethodNum,
         int32_t merchant_id = 0;
         int32_t shop_id = 0;
         int32_t pub_key_id = 0;
+        double amount_sum = 0;
         char* es256_priv_key = 0;
+        char* currency = 0;
+        char* card_id = 0;
+        char* cardholder_id = 0;
+        char* sbp = 0;
         std::string token = "";
         
         {
@@ -386,49 +390,139 @@ bool CAddInNative::CallAsFunc(const long lMethodNum,
                 return false;
 
             for (int i = 0; i < lSizeArray; i++) {
-                param = (paParams + i);
-                switch (TV_VT(param))
+                switch (TV_VT(&paParams[i]))
                 {
                 case VTYPE_I4:
-                    if (i == 1) merchant_id = TV_I4(param);
-                    if (i == 2) shop_id = TV_I4(param);
-                    if (i == 3) pub_key_id = TV_I4(param);
-
+                    if (i == 1) {
+                        merchant_id = TV_I4(&paParams[1]);
+                        shop_id = TV_I4(&paParams[2]);
+                        pub_key_id = TV_I4(&paParams[3]);
+                    }
+                    if (i == 4) amount_sum = TV_I4(&paParams[4]);
+                    break;
+                case VTYPE_R8:
+                    amount_sum = TV_R8(&paParams[4]);
+                    break;
                 case VTYPE_PWSTR:
-                    ::convFromShortWchar(&wsTmp, TV_WSTR(paParams));
-                    size = wcstombs(0, wsTmp, 0) + 1;
-                    mbstr = new char[size];
-                    memset(mbstr, 0, size);
-                    size = wcstombs(mbstr, wsTmp, getLenShortWcharStr(TV_WSTR(paParams)));
-                    es256_priv_key = mbstr;
-
+                    if (i == 0) {
+                        es256_priv_key = get_str_param(paParams, 0);
+                        currency = get_str_param(paParams, 5);
+                        card_id = get_str_param(paParams, 6);
+                        cardholder_id = get_str_param(paParams, 7);
+                        sbp = get_str_param(paParams, 8);
+                    }
+                    break;
                 default:
-                    //param = paParams;
                     break;
                 }
             }
 
         }
-
+      
         try {
-            const std::string cert(es256_priv_key);
-            token = jwt::create()
-                .set_type("JWT")
-                .set_id("ES256")
-                .set_payload_claim("merchant_id", picojson::value(int64_t{ merchant_id }))
-                .set_payload_claim("shop_id", picojson::value(int64_t{ shop_id }))
-                .set_payload_claim("pub_key_id", picojson::value(int64_t{ pub_key_id }))
-                .sign(jwt::algorithm::es256("", cert, "", ""));
+
+            picojson::value cert_params;
+            std::string err = picojson::parse(cert_params, es256_priv_key);
+
+            if (!err.empty()) throw err;
+
+            const std::string cert = cert_params.get("cert").get<std::string>();
+            const std::string key = cert_params.get("key").get<std::string>();
+
+            picojson::object amountObject;
+            if (amount_sum && currency[0] != '\0') {
+                amountObject["value"] = picojson::value(amount_sum);
+                amountObject["currency"] = picojson::value(currency);
+            }
+
+            picojson::object payoutMethodObject;
+            if (card_id[0] != '\0' && cardholder_id[0] != '\0') {
+                picojson::object cardObject;
+                cardObject["id"] = picojson::value(card_id);
+                cardObject["cardholder_id"] = picojson::value(cardholder_id);
+                payoutMethodObject["card"] = picojson::value(cardObject);
+            }
+
+            if (sbp[0] != '\0') {
+                picojson::value sbp_params;
+                std::string err = picojson::parse(sbp_params, sbp);
+                if (err.empty()) {
+                    const std::string bank_member_id = sbp_params.get("bank_member_id").get<std::string>();
+                    const std::string phone = sbp_params.get("phone").get<std::string>();
+
+                    if (!bank_member_id.empty()) {
+                        picojson::object sbpObject;
+                        sbpObject["bank_member_id"] = picojson::value(bank_member_id);
+                        if (!phone.empty()) sbpObject["phone"] = picojson::value(phone);
+                        payoutMethodObject["sbp"] = picojson::value(sbpObject);
+                    }
+
+                }
+            }
+
+            if (!amountObject.empty() && !payoutMethodObject.empty())
+            {
+
+                token = jwt::create()
+                    .set_type("JWT")
+                    .set_id("ES256")
+                    .set_payload_claim("merchant_id", picojson::value(int64_t{ merchant_id }))
+                    .set_payload_claim("shop_id", picojson::value(int64_t{ shop_id }))
+                    .set_payload_claim("pub_key_id", picojson::value(int64_t{ pub_key_id }))
+                    .set_payload_claim("idempotency_key", picojson::value(key))
+                    .set_payload_claim("amount", picojson::value(amountObject))
+                    .set_payload_claim("payout_method", picojson::value(payoutMethodObject))
+                    .sign(jwt::algorithm::es256("", cert, "", ""));
+            }
+            else if(!amountObject.empty() && payoutMethodObject.empty())
+            {
+
+                token = jwt::create()
+                    .set_type("JWT")
+                    .set_id("ES256")
+                    .set_payload_claim("merchant_id", picojson::value(int64_t{ merchant_id }))
+                    .set_payload_claim("shop_id", picojson::value(int64_t{ shop_id }))
+                    .set_payload_claim("pub_key_id", picojson::value(int64_t{ pub_key_id }))
+                    .set_payload_claim("idempotency_key", picojson::value(key))
+                    .set_payload_claim("amount", picojson::value(amountObject))
+                    .sign(jwt::algorithm::es256("", cert, "", ""));
+            }
+            else if (amountObject.empty() && !payoutMethodObject.empty())
+            {
+
+                token = jwt::create()
+                    .set_type("JWT")
+                    .set_id("ES256")
+                    .set_payload_claim("merchant_id", picojson::value(int64_t{ merchant_id }))
+                    .set_payload_claim("shop_id", picojson::value(int64_t{ shop_id }))
+                    .set_payload_claim("pub_key_id", picojson::value(int64_t{ pub_key_id }))
+                    .set_payload_claim("idempotency_key", picojson::value(key))
+                    .set_payload_claim("payout_method", picojson::value(payoutMethodObject))
+                    .sign(jwt::algorithm::es256("", cert, "", ""));
+            }
+            else
+            {
+                token = jwt::create()
+                    .set_type("JWT")
+                    .set_id("ES256")
+                    .set_payload_claim("merchant_id", picojson::value(int64_t{ merchant_id }))
+                    .set_payload_claim("shop_id", picojson::value(int64_t{ shop_id }))
+                    .set_payload_claim("pub_key_id", picojson::value(int64_t{ pub_key_id }))
+                    .set_payload_claim("idempotency_key", picojson::value(key))
+                    .sign(jwt::algorithm::es256("", cert, "", ""));
+            }
         }
-        catch (...) {
-            size = strlen(es256_priv_key);
+        catch (const char* error_message) {
+            size = strlen(error_message);
             m_iMemory->AllocMemory((void**)&pvarRetValue->pstrVal, size);
             TV_VT(pvarRetValue) = VTYPE_PSTR;
-            memcpy((void*)pvarRetValue->pstrVal, es256_priv_key, size);
+            memcpy((void*)pvarRetValue->pstrVal, error_message, size);
             pvarRetValue->strLen = size;
 
-            if (mbstr)
-                delete[] mbstr;
+            if (es256_priv_key)
+                delete[] es256_priv_key;
+            if (currency)
+                delete[] currency;
 
             return true;
         }
@@ -442,8 +536,10 @@ bool CAddInNative::CallAsFunc(const long lMethodNum,
 
         ret = true;
 
-        if (mbstr)
-            delete[] mbstr;
+        if (es256_priv_key)
+            delete[] es256_priv_key;
+        if (currency)
+            delete[] currency;
 
         break;
 
@@ -612,3 +708,19 @@ uint32_t getLenShortWcharStr(const WCHAR_T* Source)
     return res;
 }
 //---------------------------------------------------------------------------//
+
+char* get_str_param(tVariant* paParams, int idx) {
+    int size = 0;
+    char* mbstr = 0;
+    wchar_t* wsTmp = 0;
+    char* result = 0;
+
+    ::convFromShortWchar(&wsTmp, TV_WSTR(&paParams[idx]));
+    size = wcstombs(0, wsTmp, 0) + 1;
+    mbstr = new char[size];
+    memset(mbstr, 0, size);
+    size = wcstombs(mbstr, wsTmp, getLenShortWcharStr(TV_WSTR(&paParams[idx])));
+
+    return mbstr;
+
+}
