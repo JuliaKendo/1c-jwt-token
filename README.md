@@ -70,10 +70,43 @@ start JWT.sln
 ВК.Включить();
 Ответ = ВК.Включен;
 Если Ответ Тогда
-    Токен = ВК.СформироватьТокен(cert , merchant_id, shop_id, pub_key_id);
+    Токен = ВК.СформироватьТокен(ident , merchant_id, shop_id, pub_key_id, sum, currency, card_id, cardholder_id, sbp);
 КонецЕсли;
 ```
 
-    `cert` - строка сертификата для подписи токена;
+    `ident` - строка json. обязательно должна содержать cert (сертификата для подписи токена) и key (уникальный идентифйикатор строкой) ;
 
     `merchant_id`, `shop_id`, `pub_key_id` - Числовые значения, необходимые для формирования токена;
+
+    `sum` - сумма платежа;
+
+    `currency` - валюта платежа ("RUB");
+
+    `card_id` - id карты для выплаты, если нет то "";
+
+    `cardholder_id` - id владельца карты, если нет то "";
+
+    `sbp` - строка json. обязательно должна содержать bank_member_id (id банка в системе быстрых платежей) и phone (телефон получателя платежа)
+
+
+# Установка на prod.
+
+    Для установки необходимо выполнить установку ssl. Для этого в проекте находится скомпилированная версия openssl-1.1.1k. 
+
+        Разархивировать файл ssl-1.1.1k-x64.tar.gz
+
+        Скопировать каталог `OpenSSL` в `C:\Program Files\` и каталог `SSL` в `C:\Program Files\Common Files\`
+
+        Открыть "File Explorer" -> правой кнопкой мыши на "This PC" -> щелкнуть на "Properties" -> щелкнуть на "Advanced System Settings"
+
+        Щелкнуть на "Environment variables" на вкладке "Advanced" -> щелкнуть "New" and Write в "Variable Name", "OPENSSLDIR", и в "Variable Value", "C:\Program Files\Common Files\SS"
+
+        Щелкнуть на "Environment variables" на вкладке "Advanced" -> щелкнуть "New" and Write в "Variable Name", "ENGINESDIR", и в "Variable Value", "C:\Program Files\OpenSSL\lib\engines-1_1"
+
+        В "System Variables" найти "Path", и добавить эти две папки: "C:\Program Files\Common Files\SS" и "C:\Program Files\OpenSSL\lib\engines-1_1", а так же добавить путь к каталогу с испольняемыми файлами "C:\Program Files\OpenSSL\bin"
+
+        Что бы проверить корректность установки openssl в терминале введите комманду `openssl version`;
+
+    Из каталога `x64\Release\` или `x64\Debug\` (в зависимости от текущего способа сборки) скопировать файл `1cJWTtoken.pdb` в каталог `C:\Users\{ИмяПользователя}\AppData\Roaming\1C\1cv8\ExtCompT\`;
+
+    Поместить компоненту в рабочий каталог.
